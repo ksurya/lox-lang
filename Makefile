@@ -16,12 +16,15 @@ clean-java:
 
 # Python targets
 run-python:
-	python3 $(PY_MAIN)
+	python python/lox.py
 
 runfile-python:
-	python3 $(PY_MAIN) $(FILE)
+	python python/lox.py --script $(FILE)
+
+clean-python:
+	rm -rf python/__pycache__
 
 # Clean all
-clean: clean-java
+clean: clean-java clean-python
 
-.PHONY: all build-java run-java runfile-java clean-java run-python runfile-python clean
+.PHONY: all build-java run-java runfile-java clean-java clean-python run-python runfile-python clean
