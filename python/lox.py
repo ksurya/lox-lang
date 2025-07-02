@@ -169,6 +169,7 @@ class Scanner:
             self.addToken(onechar_type)
 
     def handleComment(self):
+        self.advance()
         while self.peek() != "\n" and not self.isAtEnd():
             self.advance()
         
@@ -198,7 +199,6 @@ class Scanner:
             self.handleTwoCharToken("=", TokenType.GREATER_EQUAL, TokenType.GREATER)
         elif c == "/":
             if self.peek() == "/":
-                self.advance()
                 self.handleComment()
             else:
                 self.addToken(TokenType.SLASH)
