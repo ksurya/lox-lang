@@ -126,7 +126,7 @@ class Scanner:
         return (
             (c >= "a" and c <= "z") or
             (c >= "A" and c <= "Z") or 
-            (c == "__")
+            (c == "_")
         )
 
     def isAlphaNumeric(self, c: str) -> bool:
@@ -161,6 +161,17 @@ class Scanner:
         type = self.keywords.get(val, TokenType.IDENTIFIER)
         self.addToken(type)
 
+    def handleTwoCharToken(self, second_char: str, twochar_type: TokenType, onechar_type: TokenType):
+        if self.peek() == second_char:
+            self.addToken(twochar_type)
+            self.advance()
+        else:
+            self.addToken(onechar_type)
+
+    def handleComment(self):
+        while self.peek() != "\n" and not self.isAtEnd():
+            self.advance()
+        
     def scanToken(self):
         c = self.advance()
         onechar_tokens = {
@@ -178,35 +189,17 @@ class Scanner:
         if c in onechar_tokens:
             self.addToken(onechar_tokens[c])
         elif c == "!":
-            if self.peek() == "=":
-                self.addToken(TokenType.BANG_EQUAL)
-                self.advance()
-            else:
-                self.addToken(TokenType.BANG)
+            self.handleTwoCharToken("=", TokenType.BANG_EQUAL, TokenType.BANG)
         elif c == "=":
-            if self.peek() == "=":
-                self.addToken(TokenType.EQUAL_EQUAL)
-                self.advance()
-            else:
-                self.addToken(TokenType.EQUAL)
+            self.handleTwoCharToken("=", TokenType.EQUAL_EQUAL, TokenType.EQUAL)
         elif c == "<":
-            if self.peek() == "=":
-                self.addToken(TokenType.LESS_EQUAL)
-                self.advance()
-            else:
-                self.addToken(TokenType.LESS)
+            self.handleTwoCharToken("=", TokenType.LESS_EQUAL, TokenType.LESS)
         elif c == ">":
-            if self.peek() == "=":
-                self.addToken(TokenType.GREATER_EQUAL)
-                self.advance()
-            else:
-                self.addToken(TokenType.GREATER)
+            self.handleTwoCharToken("=", TokenType.GREATER_EQUAL, TokenType.GREATER)
         elif c == "/":
             if self.peek() == "/":
-                # A comment goes until the end of the line
                 self.advance()
-                while self.peek() != "\n" and not self.isAtEnd():
-                    self.advance()
+                self.handleComment()
             else:
                 self.addToken(TokenType.SLASH)
         elif c == "\n":
