@@ -92,9 +92,9 @@ class Scanner:
         self.onError: Callable[[int, str], None] = onError
         self.source: str = source
         self.tokens: list[Token] = []
-        self.start: int = 0
-        self.current: int = 0
-        self.line: int = 1
+        self.start: int = 0 # current token start
+        self.current: int = 0 # current scan position 
+        self.line: int = 1 # current line
     
     def isAtEnd(self) -> bool:
         return self.current >= len(self.source)
@@ -119,14 +119,6 @@ class Scanner:
         text = self.source[self.start:self.current]
         self.tokens.append(Token(type, text, literal, self.line))
 
-    def match(self, expected: str) -> bool:
-        if self.isAtEnd():
-            return False
-        if self.source[self.current] != expected:
-            return False
-        self.current += 1
-        return True
-    
     def isDigit(self, c: str) -> bool:
         return c >= "0" and c <= "9"
     
@@ -171,58 +163,62 @@ class Scanner:
 
     def scanToken(self):
         c = self.advance()
-        if c == "(":
-            self.addToken(TokenType.LEFT_PAREN)
-        elif c == ")":
-            self.addToken(TokenType.RIGHT_PAREN)
-        elif c == "{":
-            self.addToken(TokenType.LEFT_BRACE)
-        elif c == "}":
-            self.addToken(TokenType.RIGHT_BRACE)
-        elif c == ",":
-            self.addToken(TokenType.COMMA)
-        elif c == ".":
-            self.addToken(TokenType.DOT)
-        elif c == "-":
-            self.addToken(TokenType.MINUS)
-        elif c == "+":
-            self.addToken(TokenType.PLUS)
-        elif c == ";":
-            self.addToken(TokenType.SEMICOLON)
-        elif c == "*":
-            self.addToken(TokenType.STAR)
+        onechar_tokens = {
+            "(": TokenType.LEFT_PAREN,
+            ")": TokenType.RIGHT_PAREN,
+            "{": TokenType.LEFT_BRACE,
+            "}": TokenType.RIGHT_BRACE,
+            ",": TokenType.COMMA,
+            ".": TokenType.DOT,
+            "-": TokenType.MINUS,
+            "+": TokenType.PLUS,
+            ";": TokenType.SEMICOLON,
+            "*": TokenType.STAR,
+        }
+        if c in onechar_tokens:
+            self.addToken(onechar_tokens[c])
         elif c == "!":
-            self.addToken(TokenType.BANG_EQUAL if self.match("=") else TokenType.BANG)
+            if self.peek() == "=":
+                self.addToken(TokenType.BANG_EQUAL)
+                self.advance()
+            else:
+                self.addToken(TokenType.BANG)
         elif c == "=":
-            self.addToken(TokenType.EQUAL_EQUAL if self.match("=") else TokenType.EQUAL)
+            if self.peek() == "=":
+                self.addToken(TokenType.EQUAL_EQUAL)
+                self.advance()
+            else:
+                self.addToken(TokenType.EQUAL)
         elif c == "<":
-            self.addToken(TokenType.LESS_EQUAL if self.match("=") else TokenType.LESS)
+            if self.peek() == "=":
+                self.addToken(TokenType.LESS_EQUAL)
+                self.advance()
+            else:
+                self.addToken(TokenType.LESS)
         elif c == ">":
-            self.addToken(TokenType.GREATER_EQUAL if self.match("=") else TokenType.GREATER)
+            if self.peek() == "=":
+                self.addToken(TokenType.GREATER_EQUAL)
+                self.advance()
+            else:
+                self.addToken(TokenType.GREATER)
         elif c == "/":
-            if self.match("/"):
+            if self.peek() == "/":
                 # A comment goes until the end of the line
+                self.advance()
                 while self.peek() != "\n" and not self.isAtEnd():
                     self.advance()
             else:
                 self.addToken(TokenType.SLASH)
-        elif c in (" ", "\r", "\t"):
-            pass
         elif c == "\n":
             self.line += 1
         elif c == '"':
             self.string()
-        elif c == "o":
-            if self.match("r"):
-                self.addToken(TokenType.OR)
-        else:
-            if self.isDigit(c):
-                self.number()
-            elif self.isAlpha(c):
-                self.identifier()
-            else:
-                self.onError(self.line, f"Unexpected character {c}")
-
+        elif self.isDigit(c):
+            self.number()
+        elif self.isAlpha(c):
+            self.identifier()
+        elif c not in (" ", "\r", "\t"):
+            self.onError(self.line, f"Unexpected character {c}")
 
     def scanTokens(self) -> list[Token]:
         while not self.isAtEnd():
