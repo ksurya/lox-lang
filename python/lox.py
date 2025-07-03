@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 from argparse import ArgumentParser
 from enum import StrEnum, auto
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union, Generic, TypeVar
+import abc
 import sys
 
+R = TypeVar("R")
 
 class TokenType(StrEnum):
     # singe char tokens
@@ -65,6 +67,107 @@ class Token:
         lexeme = self.lexeme or ''
         literal = self.literal or 'null'
         return f"{type} {lexeme} {literal}"
+
+
+class Expr(abc.ABC):
+    @abc.abstractmethod
+    def accept(self, visitor: "Visitor[R]") -> R: 
+        pass
+
+
+class Visitor(abc.ABC, Generic[R]):
+    @abc.abstractmethod
+    def visitBinaryExpr(self, expr: "Binary") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitGroupingExpr(self, expr: "Grouping") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitLiteralExpr(self, expr: "Literal") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitUnaryExpr(self, expr: "Unary") -> R:
+        pass
+
+
+class Binary(Expr):
+    def __init__(self, left: Expr, operator: Token, right: Expr):
+        self.left: Expr = left
+        self.operator: Token = operator
+        self.right: Expr = right
+
+    def accept(self, visitor: Visitor[R]) -> R:
+        return visitor.visitBinaryExpr(self)
+
+
+class Grouping(Expr):
+    def __init__(self, expression: Expr):
+        self.expression: Expr = expression
+
+    def accept(self, visitor: Visitor[R]) -> R:
+        return visitor.visitGroupingExpr(self)
+
+
+class Literal(Expr):
+    def __init__(self, value: Union[str, int, float, None]):
+        self.value: Union[str, int, float, None] = value
+
+    def accept(self, visitor: Visitor[R]) -> R:
+        return visitor.visitLiteralExpr(self)
+
+
+class Unary(Expr):
+    def __init__(self, operator: Token, right: Expr):
+        self.operator: Token = operator
+        self.right: Expr = right
+
+    def accept(self, visitor: Visitor[R]) -> R:
+        return visitor.visitUnaryExpr(self)
+
+
+class AstPrinter(Visitor[str]):
+    def _parenthesize(self, name: str, *exprs: Expr):
+        string_container = ["(", name]
+        for expr in exprs:
+            string_container.append(" ")
+            string_container.append(expr.accept(self))
+        string_container.append(")")
+        return "".join(string_container)
+    
+    def print(self, expr: Expr) -> str:
+        return expr.accept(self)
+
+    def visitBinaryExpr(self, expr: Binary) -> str:
+        return self._parenthesize(expr.operator.lexeme, expr.left, expr.right)
+
+    def visitGroupingExpr(self, expr: Grouping) -> str:
+        return self._parenthesize("group", expr.expression)
+    
+    def visitLiteralExpr(self, expr: Literal) -> str:
+        if expr.value is None:
+            return "nil"
+        else:
+            return str(expr.value)
+    
+    def visitUnaryExpr(self, expr: Unary) -> str:
+        return self._parenthesize(expr.operator.lexeme, expr.right)
+
+    @staticmethod
+    def test():
+        expr = Binary(
+            Unary(
+                Token(TokenType.MINUS, "-", None, 1),
+                Literal(123)
+            ),
+            Token(TokenType.STAR, "*", None, 1),
+            Grouping(
+                Literal(45.67),
+            )
+        )
+        print(AstPrinter().print(expr))
 
 
 class Scanner:
@@ -262,11 +365,14 @@ def main(args):
     lox = Lox()
     if args.script:
         lox.runFile(args.script)
+    elif args.ast:
+        AstPrinter.test()
     else:
         lox.runPrompt()
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('--script', default=None)
+    parser.add_argument('--ast', action="store_true")
     main(parser.parse_args())
     

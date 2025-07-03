@@ -2,17 +2,22 @@
 all: build-java
 
 # Java targets
+build-java: clean-java
 build-java:
-	javac -d java java/com/craftinginterpreters/lox/*.java
+	javac -d java java/com/craftinginterpreters/tool/GenerateAst.java
+	java -cp java com.craftinginterpreters.tool.GenerateAst ./java/com/craftinginterpreters/lox
+	javac -d java java/com/craftinginterpreters/*/*.java
 
-run-java: build-java
-	java -cp java com.craftinginterpreters.lox.Lox
+run-java:
+	# java -cp java com.craftinginterpreters.lox.Lox
+	java -cp java com.craftinginterpreters.lox.AstPrinter
 
-runfile-java: build-java
+runfile-java:
 	java -cp java com.craftinginterpreters.lox.Lox $(FILE)
 
 clean-java:
-	rm java/com/craftinginterpreters/lox/*.class
+	rm java/com/craftinginterpreters/lox/Expr.java
+	rm java/com/craftinginterpreters/*/*.class
 
 # Python targets
 run-python:
