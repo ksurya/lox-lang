@@ -9,8 +9,8 @@ build-java:
 	javac -d java java/com/craftinginterpreters/*/*.java
 
 run-java:
-	# java -cp java com.craftinginterpreters.lox.Lox
-	java -cp java com.craftinginterpreters.lox.AstPrinter
+	java -cp java com.craftinginterpreters.lox.Lox
+	# java -cp java com.craftinginterpreters.lox.AstPrinter
 
 runfile-java:
 	java -cp java com.craftinginterpreters.lox.Lox $(FILE)
