@@ -172,6 +172,96 @@ class AstPrinter(Visitor[str]):
         print(AstPrinter().print(expr))
 
 
+class LoxRuntimeError(RuntimeError):
+    def __init__(self, token: Token, message: str):
+        super().__init__(message)
+        self.token: Token = token
+
+
+class Interpreter(Visitor[object]):
+
+    def interpret(self, expr: Expr, onError: Callable):
+        try:
+            value: object = self.evaluate(expr)
+            print(self.stringify(value))
+        except LoxRuntimeError as err:
+            onError(err)
+
+    def stringify(self, obj: object) -> str:
+        if obj == None:
+            return "nil"
+        return str(obj)
+
+    def evaluate(self, expr: Expr) -> object:
+        return expr.accept(self)
+    
+    def isTruthy(self, obj: object) -> bool:
+        if obj == None:
+            return False
+        if isinstance(obj, bool):
+            return bool(obj)
+        return True
+
+    def checkNumberOperand(self, operator: Token, operand: object) -> None:
+        if isinstance(operand, (int, float)):
+            return
+        raise LoxRuntimeError(operator, "Operand must be a number")
+
+    def checkNumberOperands(self, operator: Token, left: object, right: object) -> None:
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            return
+        raise LoxRuntimeError(operator, "Operands must be numbers")
+
+    def visitLiteralExpr(self, expr: Literal) -> object:
+        return expr.value
+    
+    def visitGroupingExpr(self, expr: Grouping) -> object:
+        return self.evaluate(expr.expression)
+    
+    def visitUnaryExpr(self, expr: Unary) -> object:
+        right: object = self.evaluate(expr.right)
+        if expr.operator.type == TokenType.BANG:
+            return not self.isTruthy(right)
+        if expr.operator.type == TokenType.MINUS:
+            self.checkNumberOperand(expr.operator, right)
+            return -float(right)
+
+    def visitBinaryExpr(self, expr: Binary) -> object:
+        left = self.evaluate(expr.left)
+        right = self.evaluate(expr.right)
+        if expr.operator.type == TokenType.GREATER:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) > float(right)
+        elif expr.operator.type == TokenType.GREATER_EQUAL:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) >= float(right)
+        elif expr.operator.type == TokenType.LESS:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) < float(right)
+        elif expr.operator.type == TokenType.LESS_EQUAL:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) <= float(right)
+        elif expr.operator.type == TokenType.BANG_EQUAL:
+            return left != right
+        elif expr.operator.type == TokenType.EQUAL_EQUAL:
+            return left == right
+        elif expr.operator.type == TokenType.MINUS:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) - float(right)
+        elif expr.operator.type == TokenType.PLUS:
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return float(left) + float(right)
+            if isinstance(left, str) and isinstance(right, str):
+                return str(left) + str(right)
+            raise LoxRuntimeError(expr.operator, "Operands must be two numbers or two strings")
+        elif expr.operator.type == TokenType.SLASH:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) / float(right)
+        elif expr.operator.type == TokenType.STAR:
+            self.checkNumberOperands(expr.operator, left, right)
+            return float(left) * float(right)
+
+
 class Scanner:
     keywords: dict[str, TokenType] = {
         "and":      TokenType.AND,
@@ -337,10 +427,8 @@ class Parser:
     comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
     term           → factor ( ( "-" | "+" ) factor )* ;
     factor         → unary ( ( "/" | "*" ) unary )* ;
-    unary          → ( "!" | "-" ) unary
-                    | primary ;
-    primary        → NUMBER | STRING | "true" | "false" | "nil"
-                    | "(" expression ")" ;
+    unary          → ( "!" | "-" ) unary | primary ;
+    primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
     """
     def __init__(self, tokens: list[Token], onError: Callable):
         self.tokens: list[Token] = tokens
@@ -469,6 +557,8 @@ class Parser:
 class Lox:
     def __init__(self):
         self.hasError = False
+        self.hasRuntimeError = False
+        self.interpreter = Interpreter()
     
     def runFile(self, path: str):
         with open(path) as fp:
@@ -493,10 +583,17 @@ class Lox:
         #     print(token)
         if self.hasError:
             sys.exit(65)
-        print(AstPrinter().print(expression))
+        self.interpreter.interpret(expression, self.runtimeError)
+        if self.hasRuntimeError:
+            sys.exit(70)
+        # print(AstPrinter().print(expression))
     
     def error(self, line: int, message: str):
         self.report(line, message, "")
+
+    def runtimeError(self, error: RuntimeError):
+        print(f"{error}\n[line {error.token.line}]")
+        self.hasRuntimeError = True
 
     def errorByToken(self, token: Token, message: str):
         if token.type == TokenType.EOF:
