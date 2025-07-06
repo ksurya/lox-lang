@@ -5,7 +5,9 @@ from typing import Any, Callable, Optional, Union, Generic, TypeVar
 import abc
 import sys
 
+
 R = TypeVar("R")
+
 
 class TokenType(StrEnum):
     # singe char tokens
@@ -37,7 +39,7 @@ class TokenType(StrEnum):
     AND = auto()
     CLASS = auto()
     ELSE = auto()
-    FLASE = auto()
+    FALSE = auto()
     FUN = auto()
     FOR = auto()
     IF = auto()
@@ -176,7 +178,7 @@ class Scanner:
         "class":    TokenType.CLASS,
         "class":    TokenType.CLASS,
         "else":     TokenType.ELSE,
-        "false":    TokenType.FLASE,
+        "false":    TokenType.FALSE,
         "for":      TokenType.FOR,
         "fun":      TokenType.FUN,
         "if":       TokenType.IF,
@@ -324,6 +326,146 @@ class Scanner:
         return self.tokens
 
 
+class ParseError(RuntimeError):
+    pass
+
+
+class Parser:
+    """Grammar
+    expression     → equality ;
+    equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+    comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+    term           → factor ( ( "-" | "+" ) factor )* ;
+    factor         → unary ( ( "/" | "*" ) unary )* ;
+    unary          → ( "!" | "-" ) unary
+                    | primary ;
+    primary        → NUMBER | STRING | "true" | "false" | "nil"
+                    | "(" expression ")" ;
+    """
+    def __init__(self, tokens: list[Token], onError: Callable):
+        self.tokens: list[Token] = tokens
+        self.current: int = 0
+        self.onError: Callable = onError
+
+    def parse(self) -> Expr:
+        try:
+            return self.expression()
+        except ParseError as err:
+            return None
+
+    def expression(self) -> Expr:
+        return self.equality()
+
+    def equality(self) -> Expr:
+        expr: Expr = self.comparison()
+        while self.match(TokenType.BANG_EQUAL, TokenType.EQUAL_EQUAL):
+            operator: Token = self.previous()
+            right: Token = self.comparison()
+            expr: Expr = Binary(expr, operator, right)
+        return expr
+    
+    def comparison(self) -> Expr:
+        expr: Expr = self.term()
+        while self.match(TokenType.GREATER, TokenType.GREATER_EQUAL, TokenType.LESS, TokenType.LESS_EQUAL):
+            operator: Expr = self.previous()
+            right: Expr = self.term()
+            expr: Expr = Binary(expr, operator, right)
+        return expr
+    
+    def term(self) -> Expr:
+        expr: Expr = self.factor()
+        while self.match(TokenType.MINUS, TokenType.PLUS):
+            operator = self.previous()
+            right = self.factor()
+            expr = Binary(expr, operator, right)
+        return expr
+    
+    def factor(self) -> Expr:
+        expr: Expr = self.unary()
+        while self.match(TokenType.SLASH, TokenType.STAR):
+            operator = self.previous()
+            right = self.unary()
+            expr = Binary(expr, operator, right)
+        return expr
+    
+    def unary(self) -> Expr:
+        if self.match(TokenType.BANG, TokenType.MINUS):
+            operator = self.previous()
+            right = self.unary()
+            return Unary(operator, right)
+        return self.primary()
+    
+    def primary(self) -> Expr:
+        if self.match(TokenType.FALSE):
+            return Literal(False)
+        if self.match(TokenType.TRUE):
+            return Literal(True)
+        if self.match(TokenType.NIL):
+            return Literal(None)
+        if self.match(TokenType.NUMBER, TokenType.STRING):
+            return Literal(self.previous().literal)
+        if self.match(TokenType.LEFT_PAREN):
+            expr = self.expression()
+            self.consume(TokenType.RIGHT_PAREN, "Expec ')' after expression")
+            return Grouping(expr)
+        raise self.error(self.peek(), "Expect expression")
+
+    def consume(self, ttype: TokenType, message: str) -> Token:
+        if self.check(ttype):
+            return self.advance()
+        raise self.error(self.peek(), message)
+    
+    def error(self, token: Token, message: str):
+        self.onError(token, message)
+        return ParseError()
+    
+    def synchronize(self):
+        self.advance()
+        while not self.isAtEnd():
+            end_stmts = (TokenType.SEMICOLON,)
+            if self.previous().type in end_stmts:
+                return
+            start_stmts = (
+                TokenType.CLASS,
+                TokenType.FUN,
+                TokenType.VAR,
+                TokenType.FOR,
+                TokenType.IF,
+                TokenType.WHILE,
+                TokenType.PRINT,
+                TokenType.RETURN,
+            )
+            if self.peek().type in start_stmts:
+                return
+            self.advance()
+
+    def match(self, *types: TokenType) -> bool:
+        for ttype in types:
+            if self.check(ttype):
+                self.advance()
+                return True
+        return False
+    
+    def check(self, ttype: TokenType) -> bool:
+        if self.isAtEnd():
+            return False
+        return self.peek().type == ttype
+
+    def advance(self) -> Token:
+        if not self.isAtEnd():
+            self.current += 1
+        return self.previous()
+    
+    def previous(self) -> Token:
+        return self.tokens[self.current-1]
+
+    def isAtEnd(self) -> bool:
+        return self.peek().type == TokenType.EOF
+
+    def peek(self) -> Token:
+        return self.tokens[self.current]
+    
+
 class Lox:
     def __init__(self):
         self.hasError = False
@@ -345,13 +487,22 @@ class Lox:
     def run(self, source: str):
         scanner = Scanner(source, self.error)
         tokens = scanner.scanTokens()
-        for token in tokens:
-            print(token)
+        parser = Parser(tokens, self.errorByToken)
+        expression = parser.parse()
+        # for token in tokens:
+        #     print(token)
         if self.hasError:
             sys.exit(65)
+        print(AstPrinter().print(expression))
     
     def error(self, line: int, message: str):
         self.report(line, message, "")
+
+    def errorByToken(self, token: Token, message: str):
+        if token.type == TokenType.EOF:
+            self.report(token.line, " at end", message)
+        else:
+            self.report(f"{token.line} at '{token.lexeme}'", message)
     
     def report(self, line: int, message: str, where: Optional[str] = None):
         if where:
