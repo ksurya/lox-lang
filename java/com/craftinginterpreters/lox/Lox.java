@@ -46,7 +46,7 @@ public class Lox {
     Scanner scanner = new Scanner(source);
     List<Token> tokens = scanner.scanTokens();
     Parser parser = new Parser(tokens);
-    Expr expression = parser.parse();
+    List<Stmt> statements = parser.parse();
 
     // // For now, just print the tokens.
     // for (Token token : tokens) {
@@ -54,9 +54,9 @@ public class Lox {
     // }
     // Indicate an error in the exit code.
     if (hadError) System.exit(65);
-    interpreter.interpret(expression);
+    interpreter.interpret(statements);
     if (hadRuntimeError) System.exit(70);
-    // System.out.println(new AstPrinter().print(expression));
+    System.out.println(new AstPrinter().print(statements));
   }
 
   static void error(int line, String message) {

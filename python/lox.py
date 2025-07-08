@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from argparse import ArgumentParser
 from enum import StrEnum, auto
-from typing import Any, Callable, Optional, Union, Generic, TypeVar
+from typing import Any, Callable, Optional, Union, Generic, TypeVar, cast
 import abc
 import sys
 
@@ -71,13 +71,53 @@ class Token:
         return f"{type} {lexeme} {literal}"
 
 
+class LoxRuntimeError(RuntimeError):
+    def __init__(self, token: Token, message: str):
+        super().__init__(message)
+        self.token: Token = token
+
+
+class LoxParseError(RuntimeError):
+    pass
+
+
+class Environment:
+    def __init__(self, enclosing: Optional["Environment"] = None):
+        self.values: dict[str, object] = {}
+        self.enclosing: Optional[Environment] = enclosing
+
+    def define(self, name: str, value: object):
+        self.values[name] = value
+
+    def assign(self, name: Token, value: object):
+        if name.lexeme in self.values:
+            self.values[name.lexeme] = value
+            return
+        if self.enclosing != None:
+            return self.enclosing.assign(name, value)
+        raise LoxRuntimeError(name, f"Undefined variable '{name.lexeme}'")
+
+    def get(self, name: Token):
+        if name.lexeme in self.values:
+            return self.values[name.lexeme]
+        if self.enclosing != None:
+            return self.enclosing.get(name)
+        raise LoxRuntimeError(name, f"Undefined variable '{name.lexeme}'")
+
+
 class Expr(abc.ABC):
     @abc.abstractmethod
-    def accept(self, visitor: "Visitor[R]") -> R: 
+    def accept(self, visitor: "ExprVisitor[R]") -> R: 
         pass
 
 
-class Visitor(abc.ABC, Generic[R]):
+class Stmt(abc.ABC):
+    @abc.abstractmethod
+    def accept(self, visitor: "StmtVisitor[R]") -> R:
+        pass
+
+
+class ExprVisitor(abc.ABC, Generic[R]):
     @abc.abstractmethod
     def visitBinaryExpr(self, expr: "Binary") -> R:
         pass
@@ -94,6 +134,44 @@ class Visitor(abc.ABC, Generic[R]):
     def visitUnaryExpr(self, expr: "Unary") -> R:
         pass
 
+    @abc.abstractmethod
+    def visitVariableExpr(self, expr: "Variable") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitAssignExpr(self, expr: "Assign") -> R:
+        pass
+
+
+class StmtVisitor(abc.ABC, Generic[R]):
+    @abc.abstractmethod
+    def visitPrintStmt(self, stmt: "Print") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitExpressionStmt(self, stmt: "Expression") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitVarStmt(self, stmt: "VarStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitBlock(self, stmt: "Block") -> R:
+        pass
+
+
+class Assign(Expr):
+    def __init__(self, name: Token, value: Expr):
+        self.name: Token = name
+        self.value: Expr = value
+    
+    def accept(self, visitor: ExprVisitor[R]) -> R:
+        return visitor.visitAssignExpr(self)
+    
+    def __str__(self):
+        return f"Assign({self.name}, {self.value})"
+
 
 class Binary(Expr):
     def __init__(self, left: Expr, operator: Token, right: Expr):
@@ -101,24 +179,33 @@ class Binary(Expr):
         self.operator: Token = operator
         self.right: Expr = right
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitBinaryExpr(self)
-
+    
+    def __str__(self):
+        return f"Binary({self.left}, {self.operator}, {self.right})"
+    
 
 class Grouping(Expr):
     def __init__(self, expression: Expr):
         self.expression: Expr = expression
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitGroupingExpr(self)
+    
+    def __str__(self):
+        return f"({self.expression})"
 
 
 class Literal(Expr):
     def __init__(self, value: Union[str, int, float, None]):
         self.value: Union[str, int, float, None] = value
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitLiteralExpr(self)
+    
+    def __str__(self):
+        return str(self.value)
 
 
 class Unary(Expr):
@@ -126,11 +213,70 @@ class Unary(Expr):
         self.operator: Token = operator
         self.right: Expr = right
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitUnaryExpr(self)
+    
+    def __str__(self):
+        return f"Unary({self.operator}, {self.right})"
 
 
-class AstPrinter(Visitor[str]):
+class Variable(Expr):
+    def __init__(self, name: Token):
+        self.name: Token = name
+    
+    def accept(self, visitor: ExprVisitor[R]) -> R:
+        return visitor.visitVariableExpr(self)
+
+    def __str__(self):
+        return f"Var({self.name})"
+
+
+class Expression(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression: Expr = expression
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitExpressionStmt(self)
+    
+    def __str__(self):
+        return f"Stmt[{self.expression}]"
+    
+
+class Print(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression: Expr = expression
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitPrintStmt(self)
+    
+    def __str__(self):
+        return f"Print[{self.expression}]"
+
+
+class VarStmt(Stmt):
+    def __init__(self, name: Token, initializer: Optional[Expr] = None):
+        self.name: Token = name
+        self.initializer: Optional[Expr] = initializer
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitVarStmt(self)
+    
+    def __str__(self):
+        return f"VarStmt[{self.name} = {self.initializer}]"
+
+
+class Block(Stmt):
+    def __init__(self, statements: list[Stmt]):
+        self.statements = statements
+    
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitBlock(self)
+    
+    def __str__(self):
+        return f"Block[{self.statements}]"
+
+
+class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
     def _parenthesize(self, name: str, *exprs: Expr):
         string_container = ["(", name]
         for expr in exprs:
@@ -141,6 +287,53 @@ class AstPrinter(Visitor[str]):
     
     def print(self, expr: Expr) -> str:
         return expr.accept(self)
+    
+    def printStmt(self, stmt: Stmt) -> str:
+        return stmt.accept(self)
+    
+    def printProgram(self, statements: list[Stmt]) -> str:
+        string_container = ["(program"]
+        for idx, stmt in enumerate(statements):
+            string_container.append(" ")
+            string_container.append(stmt.accept(self))
+            if idx < len(statements) - 1:
+                string_container.append("\n")
+        string_container.append(")")
+        return "".join(string_container)
+    
+    def visitBlock(self, stmt: Block) -> str:
+        string_container = ["(block "]
+        for idx, statement in enumerate(stmt.statements):
+            string_container.append(" ")
+            string_container.append(statement.accept(self))
+            if idx < len(stmt.statements) - 1:
+                string_container.append("\n")
+        string_container.append(")")
+        return "".join(string_container)
+    
+    def visitExpressionStmt(self, stmt: Expression) -> str:
+        return self._parenthesize("expression", stmt.expression)
+    
+    def visitPrintStmt(self, stmt: Print) -> str:
+        return self._parenthesize("print", stmt.expression)
+    
+    def visitVarStmt(self, stmt: VarStmt) -> str:
+        string_container = ["(var "]
+        string_container.append(stmt.name.lexeme)
+        if stmt.initializer is not None:
+            string_container.append("=")
+            string_container.append(stmt.initializer.accept(self))
+        string_container.append(")")
+        return "".join(string_container)
+    
+    def visitAssignExpr(self, expr: Assign) -> str:
+        string_container = []
+        string_container.append("(")
+        string_container.append(expr.name.lexeme)
+        string_container.append("=")
+        string_container.append(expr.value.accept(self))
+        string_container.append(")")
+        return "".join(string_container)
 
     def visitBinaryExpr(self, expr: Binary) -> str:
         return self._parenthesize(expr.operator.lexeme, expr.left, expr.right)
@@ -151,14 +344,18 @@ class AstPrinter(Visitor[str]):
     def visitLiteralExpr(self, expr: Literal) -> str:
         if expr.value is None:
             return "nil"
+        elif isinstance(expr.value, str):
+            return f'"{expr.value}"'
         else:
             return str(expr.value)
     
     def visitUnaryExpr(self, expr: Unary) -> str:
         return self._parenthesize(expr.operator.lexeme, expr.right)
 
-    @staticmethod
-    def test():
+    def visitVariableExpr(self, expr: Variable) -> str:
+        return expr.name.lexeme
+ 
+    def test(self):
         expr = Binary(
             Unary(
                 Token(TokenType.MINUS, "-", None, 1),
@@ -169,21 +366,18 @@ class AstPrinter(Visitor[str]):
                 Literal(45.67),
             )
         )
-        print(AstPrinter().print(expr))
+        print(self.print(expr))
 
 
-class LoxRuntimeError(RuntimeError):
-    def __init__(self, token: Token, message: str):
-        super().__init__(message)
-        self.token: Token = token
+class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
-
-class Interpreter(Visitor[object]):
-
-    def interpret(self, expr: Expr, onError: Callable):
+    def __init__(self):
+        self.environment = Environment()
+    
+    def interpret(self, statements: list[Stmt], onError: Callable):
         try:
-            value: object = self.evaluate(expr)
-            print(self.stringify(value))
+            for statement in statements:
+                self.execute(statement)
         except LoxRuntimeError as err:
             onError(err)
 
@@ -194,6 +388,18 @@ class Interpreter(Visitor[object]):
 
     def evaluate(self, expr: Expr) -> object:
         return expr.accept(self)
+    
+    def execute(self, stmt: Stmt):
+        stmt.accept(self)
+
+    def executeBlock(self, statements: list[Stmt], environment: Environment):
+        prevEnvironment = self.environment
+        try:
+            self.environment = environment
+            for statement in statements:
+                self.execute(statement)
+        finally:
+            self.environment = prevEnvironment
     
     def isTruthy(self, obj: object) -> bool:
         if obj == None:
@@ -224,30 +430,33 @@ class Interpreter(Visitor[object]):
             return not self.isTruthy(right)
         if expr.operator.type == TokenType.MINUS:
             self.checkNumberOperand(expr.operator, right)
-            return -float(right)
+            return -float(cast(float, right))
+        
+    def visitVariableExpr(self, expr: Variable) -> object:
+        return self.environment.get(expr.name)
 
     def visitBinaryExpr(self, expr: Binary) -> object:
         left = self.evaluate(expr.left)
         right = self.evaluate(expr.right)
         if expr.operator.type == TokenType.GREATER:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) > float(right)
+            return float(cast(float, left)) > float(cast(float, right))
         elif expr.operator.type == TokenType.GREATER_EQUAL:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) >= float(right)
+            return float(cast(float, left)) >= float(cast(float, right))
         elif expr.operator.type == TokenType.LESS:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) < float(right)
+            return float(cast(float, left)) < float(cast(float, right))
         elif expr.operator.type == TokenType.LESS_EQUAL:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) <= float(right)
+            return float(cast(float, left)) <= float(cast(float, right))
         elif expr.operator.type == TokenType.BANG_EQUAL:
             return left != right
         elif expr.operator.type == TokenType.EQUAL_EQUAL:
             return left == right
         elif expr.operator.type == TokenType.MINUS:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) - float(right)
+            return float(cast(float, left)) - float(cast(float, right))
         elif expr.operator.type == TokenType.PLUS:
             if isinstance(left, (int, float)) and isinstance(right, (int, float)):
                 return float(left) + float(right)
@@ -256,10 +465,31 @@ class Interpreter(Visitor[object]):
             raise LoxRuntimeError(expr.operator, "Operands must be two numbers or two strings")
         elif expr.operator.type == TokenType.SLASH:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) / float(right)
+            return float(cast(float, left)) / float(cast(float, right))
         elif expr.operator.type == TokenType.STAR:
             self.checkNumberOperands(expr.operator, left, right)
-            return float(left) * float(right)
+            return float(cast(float, left)) * float(cast(float, right))
+
+    def visitAssignExpr(self, expr: Assign) -> object:
+        value = self.evaluate(expr.value)
+        self.environment.assign(expr.name, value)
+        return value
+        
+    def visitPrintStmt(self, stmt: Print):
+        value = self.evaluate(stmt.expression)
+        print(self.stringify(value))
+
+    def visitExpressionStmt(self, stmt: Expression):
+        self.evaluate(stmt.expression)
+
+    def visitVarStmt(self, stmt: VarStmt):
+        value = None
+        if stmt.initializer != None:
+            value = self.evaluate(stmt.initializer)
+        self.environment.define(stmt.name.lexeme, value)
+
+    def visitBlock(self, stmt: Block):
+        self.executeBlock(stmt.statements, Environment(self.environment))
 
 
 class Scanner:
@@ -416,46 +646,104 @@ class Scanner:
         return self.tokens
 
 
-class ParseError(RuntimeError):
-    pass
-
-
 class Parser:
     """Grammar
-    expression     → equality ;
+    program        → declaration* EOF ;
+    declaration    → varDecl | statement;
+    varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
+    statement      → exprStmt | printStmt | block ;
+    block          → "{" declaration* "}"
+    exprStmt       → expression ";" ;
+    printStmt      → "print" expression ";" ;
+    expression     → assignment ;
+    assignment     → IDENTIFIER "=" assignment | equality ;
     equality       → comparison ( ( "!=" | "==" ) comparison )* ;
     comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
     term           → factor ( ( "-" | "+" ) factor )* ;
     factor         → unary ( ( "/" | "*" ) unary )* ;
     unary          → ( "!" | "-" ) unary | primary ;
-    primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
+    primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" | IDENTIFIER ;
     """
     def __init__(self, tokens: list[Token], onError: Callable):
         self.tokens: list[Token] = tokens
         self.current: int = 0
         self.onError: Callable = onError
 
-    def parse(self) -> Expr:
+    def parse(self) -> list[Stmt]:
+        statements: list[Stmt] = []
+        while not self.isAtEnd():
+            next_statement = self.declaration()
+            if next_statement is not None:
+                statements.append(next_statement)
+        return statements
+    
+    def declaration(self) -> Optional[Stmt]:
         try:
-            return self.expression()
-        except ParseError as err:
-            return None
+            if self.match(TokenType.VAR):
+                return self.varDeclaration()
+            return self.statement()
+        except LoxParseError as err:
+            self.synchronize()
+        
+    def statement(self) -> Stmt:
+        if self.match(TokenType.PRINT):
+            return self.printStatement()
+        if self.match(TokenType.LEFT_BRACE):
+            return Block(self.block())
+        return self.expressionStatement()
+    
+    def varDeclaration(self) -> Stmt:
+        name = self.consume(TokenType.IDENTIFIER, "Expect variable name")
+        initializer: Optional[Expr] = None
+        if self.match(TokenType.EQUAL):
+            initializer = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after variable declaration")
+        return VarStmt(name, initializer)
+
+    def printStatement(self) -> Stmt:
+        value: Expr = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after value")
+        return Print(value)
+    
+    def block(self) -> list[Stmt]:
+        statements: list[Stmt] = []
+        while not self.check(TokenType.RIGHT_BRACE) and not self.isAtEnd():
+            next_statement = self.declaration()
+            if next_statement is not None:
+                statements.append(next_statement)
+        self.consume(TokenType.RIGHT_BRACE, "Expect } after block")
+        return statements
+    
+    def expressionStatement(self) -> Stmt:
+        value: Expr = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after value")
+        return Expression(value)
 
     def expression(self) -> Expr:
-        return self.equality()
+        return self.assignment()
+    
+    def assignment(self):
+        expr: Variable = cast(Variable, self.equality())
+        if self.match(TokenType.EQUAL):
+            equals: Token = self.previous()
+            value: Expr = self.assignment()
+            if isinstance(expr, Variable):
+                return Assign(expr.name, value)
+            self.error(equals, "Invalid assignment target")
+        return expr
 
     def equality(self) -> Expr:
         expr: Expr = self.comparison()
         while self.match(TokenType.BANG_EQUAL, TokenType.EQUAL_EQUAL):
             operator: Token = self.previous()
-            right: Token = self.comparison()
+            right: Expr = self.comparison()
             expr: Expr = Binary(expr, operator, right)
         return expr
     
     def comparison(self) -> Expr:
         expr: Expr = self.term()
         while self.match(TokenType.GREATER, TokenType.GREATER_EQUAL, TokenType.LESS, TokenType.LESS_EQUAL):
-            operator: Expr = self.previous()
+            operator: Token = self.previous()
             right: Expr = self.term()
             expr: Expr = Binary(expr, operator, right)
         return expr
@@ -492,9 +780,11 @@ class Parser:
             return Literal(None)
         if self.match(TokenType.NUMBER, TokenType.STRING):
             return Literal(self.previous().literal)
+        if self.match(TokenType.IDENTIFIER):
+            return Variable(self.previous())
         if self.match(TokenType.LEFT_PAREN):
             expr = self.expression()
-            self.consume(TokenType.RIGHT_PAREN, "Expec ')' after expression")
+            self.consume(TokenType.RIGHT_PAREN, "Expect ')' after expression")
             return Grouping(expr)
         raise self.error(self.peek(), "Expect expression")
 
@@ -505,7 +795,7 @@ class Parser:
     
     def error(self, token: Token, message: str):
         self.onError(token, message)
-        return ParseError()
+        return LoxParseError()
     
     def synchronize(self):
         self.advance()
@@ -566,11 +856,14 @@ class Lox:
         self.run(source)
     
     def runPrompt(self):
-        print("> Lox interpreter (enter \\q to exit)")
+        print("> Lox Language interpreter")
+        print("> Enter \\q to quit")
         while True:
             line = input("> ")
             if line.strip() == "\\q":
                 break
+            if line.strip() == "":
+                continue
             self.run(line)
             self.hasError = False
     
@@ -578,20 +871,20 @@ class Lox:
         scanner = Scanner(source, self.error)
         tokens = scanner.scanTokens()
         parser = Parser(tokens, self.errorByToken)
-        expression = parser.parse()
+        statements = parser.parse()
         # for token in tokens:
         #     print(token)
         if self.hasError:
             sys.exit(65)
-        self.interpreter.interpret(expression, self.runtimeError)
+        self.interpreter.interpret(statements, self.runtimeError)
         if self.hasRuntimeError:
             sys.exit(70)
-        # print(AstPrinter().print(expression))
+        print(AstPrinter().printProgram(statements))
     
     def error(self, line: int, message: str):
         self.report(line, message, "")
 
-    def runtimeError(self, error: RuntimeError):
+    def runtimeError(self, error: LoxRuntimeError):
         print(f"{error}\n[line {error.token.line}]")
         self.hasRuntimeError = True
 
@@ -599,7 +892,7 @@ class Lox:
         if token.type == TokenType.EOF:
             self.report(token.line, " at end", message)
         else:
-            self.report(f"{token.line} at '{token.lexeme}'", message)
+            self.report(token.line, f"at '{token.lexeme}'", message)
     
     def report(self, line: int, message: str, where: Optional[str] = None):
         if where:
@@ -610,13 +903,12 @@ class Lox:
 
 
 def main(args):
-    lox = Lox()
     if args.script:
-        lox.runFile(args.script)
+        Lox().runFile(args.script)
     elif args.ast:
-        AstPrinter.test()
+        AstPrinter().test()
     else:
-        lox.runPrompt()
+        Lox().runPrompt()
 
 if __name__ == "__main__":
     parser = ArgumentParser()
