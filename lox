@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# usage: python python/lox.py --script <script_file>
+# script is optional
+
+python3 python/lox.py --script "$1"
+
