@@ -73,11 +73,17 @@ class Token:
 
 class Expr(abc.ABC):
     @abc.abstractmethod
-    def accept(self, visitor: "Visitor[R]") -> R: 
+    def accept(self, visitor: "ExprVisitor[R]") -> R: 
         pass
 
 
-class Visitor(abc.ABC, Generic[R]):
+class Stmt(abc.ABC):
+    @abc.abstractmethod
+    def accept(self, visitor: "StmtVisitor[R]") -> R:
+        pass
+
+
+class ExprVisitor(abc.ABC, Generic[R]):
     @abc.abstractmethod
     def visitBinaryExpr(self, expr: "Binary") -> R:
         pass
@@ -95,30 +101,49 @@ class Visitor(abc.ABC, Generic[R]):
         pass
 
 
+class StmtVisitor(abc.ABC, Generic[R]):
+    @abc.abstractmethod
+    def visitPrintStmt(self, expr: "Print") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitExpressionStmt(self, expr: "Expression") -> R:
+        pass
+
+
 class Binary(Expr):
     def __init__(self, left: Expr, operator: Token, right: Expr):
         self.left: Expr = left
         self.operator: Token = operator
         self.right: Expr = right
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitBinaryExpr(self)
-
+    
+    def __str__(self):
+        return f"Binary({self.left}, {self.operator}, {self.right})"
+    
 
 class Grouping(Expr):
     def __init__(self, expression: Expr):
         self.expression: Expr = expression
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitGroupingExpr(self)
+    
+    def __str__(self):
+        return f"({self.expression})"
 
 
 class Literal(Expr):
     def __init__(self, value: Union[str, int, float, None]):
         self.value: Union[str, int, float, None] = value
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitLiteralExpr(self)
+    
+    def __str__(self):
+        return str(self.value)
 
 
 class Unary(Expr):
@@ -126,11 +151,36 @@ class Unary(Expr):
         self.operator: Token = operator
         self.right: Expr = right
 
-    def accept(self, visitor: Visitor[R]) -> R:
+    def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitUnaryExpr(self)
+    
+    def __str__(self):
+        return f"Unary({self.operator}, {self.right})"
 
 
-class AstPrinter(Visitor[str]):
+class Expression(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression: Expr = expression
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitExpressionStmt(self)
+    
+    def __str__(self):
+        return f"Stmt[{self.expression}]"
+    
+
+class Print(Stmt):
+    def __init__(self, expression: Expr):
+        self.expression: Expr = expression
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitPrintStmt(self)
+    
+    def __str__(self):
+        return f"Print[{self.expression}]"
+
+
+class AstPrinter(ExprVisitor[str]):
     def _parenthesize(self, name: str, *exprs: Expr):
         string_container = ["(", name]
         for expr in exprs:
@@ -157,8 +207,7 @@ class AstPrinter(Visitor[str]):
     def visitUnaryExpr(self, expr: Unary) -> str:
         return self._parenthesize(expr.operator.lexeme, expr.right)
 
-    @staticmethod
-    def test():
+    def test(self):
         expr = Binary(
             Unary(
                 Token(TokenType.MINUS, "-", None, 1),
@@ -169,7 +218,7 @@ class AstPrinter(Visitor[str]):
                 Literal(45.67),
             )
         )
-        print(AstPrinter().print(expr))
+        print(self.print(expr))
 
 
 class LoxRuntimeError(RuntimeError):
@@ -178,12 +227,11 @@ class LoxRuntimeError(RuntimeError):
         self.token: Token = token
 
 
-class Interpreter(Visitor[object]):
-
-    def interpret(self, expr: Expr, onError: Callable):
+class Interpreter(ExprVisitor[object], StmtVisitor[None]):
+    def interpret(self, statements: list[Stmt], onError: Callable):
         try:
-            value: object = self.evaluate(expr)
-            print(self.stringify(value))
+            for statement in statements:
+                self.execute(statement)
         except LoxRuntimeError as err:
             onError(err)
 
@@ -194,6 +242,9 @@ class Interpreter(Visitor[object]):
 
     def evaluate(self, expr: Expr) -> object:
         return expr.accept(self)
+    
+    def execute(self, stmt: Stmt):
+        stmt.accept(self)
     
     def isTruthy(self, obj: object) -> bool:
         if obj == None:
@@ -260,6 +311,13 @@ class Interpreter(Visitor[object]):
         elif expr.operator.type == TokenType.STAR:
             self.checkNumberOperands(expr.operator, left, right)
             return float(left) * float(right)
+        
+    def visitPrintStmt(self, stmt: Print):
+        value = self.evaluate(stmt.expression)
+        print(self.stringify(value))
+
+    def visitExpressionStmt(self, stmt: Expression):
+        self.evaluate(stmt.expression)
 
 
 class Scanner:
@@ -422,6 +480,10 @@ class ParseError(RuntimeError):
 
 class Parser:
     """Grammar
+    program        → statement* EOF ;
+    statement      → exprStmt | printStmt ;
+    exprStmt       → expression ";" ;
+    printStmt      → "print" expression ";" ;
     expression     → equality ;
     equality       → comparison ( ( "!=" | "==" ) comparison )* ;
     comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
@@ -435,11 +497,29 @@ class Parser:
         self.current: int = 0
         self.onError: Callable = onError
 
-    def parse(self) -> Expr:
+    def parse(self) -> list[Stmt]:
+        statements: list[Stmt] = []
         try:
-            return self.expression()
+            while not self.isAtEnd():
+                statements.append(self.statement())
         except ParseError as err:
-            return None
+            pass
+        return statements
+    
+    def statement(self) -> Stmt:
+        if self.match(TokenType.PRINT):
+            return self.printStatement()
+        return self.expressionStatement()
+    
+    def printStatement(self) -> Stmt:
+        value: Expr = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after value")
+        return Print(value)
+    
+    def expressionStatement(self) -> Stmt:
+        value: Expr = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after value")
+        return Expression(value)
 
     def expression(self) -> Expr:
         return self.equality()
@@ -578,12 +658,12 @@ class Lox:
         scanner = Scanner(source, self.error)
         tokens = scanner.scanTokens()
         parser = Parser(tokens, self.errorByToken)
-        expression = parser.parse()
+        statements = parser.parse()
         # for token in tokens:
         #     print(token)
         if self.hasError:
             sys.exit(65)
-        self.interpreter.interpret(expression, self.runtimeError)
+        self.interpreter.interpret(statements, self.runtimeError)
         if self.hasRuntimeError:
             sys.exit(70)
         # print(AstPrinter().print(expression))
