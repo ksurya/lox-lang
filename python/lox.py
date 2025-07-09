@@ -165,6 +165,10 @@ class StmtVisitor(abc.ABC, Generic[R]):
         pass
 
     @abc.abstractmethod
+    def visitWhileStmt(self, stmt: "WhileStmt") -> R:
+        pass
+
+    @abc.abstractmethod
     def visitBlock(self, stmt: "BlockStmt") -> R:
         pass
 
@@ -206,8 +210,8 @@ class Grouping(Expr):
 
 
 class Literal(Expr):
-    def __init__(self, value: Union[str, int, float, None]):
-        self.value: Union[str, int, float, None] = value
+    def __init__(self, value: Union[str, int, float, bool, None]):
+        self.value: Union[str, int, float, bool, None] = value
 
     def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitLiteralExpr(self)
@@ -297,6 +301,18 @@ class VarStmt(Stmt):
     
     def __str__(self):
         return f"VarStmt[{self.name} = {self.initializer}]"
+
+
+class WhileStmt(Stmt):
+    def __init__(self, condition: Expr, body: Stmt):
+        self.condition: Expr = condition
+        self.body: Stmt = body
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitWhileStmt(self)
+    
+    def __str__(self):
+        return f"(if ({self.condition}) ({self.body})))"
 
 
 class BlockStmt(Stmt):
@@ -547,6 +563,10 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
             value = self.evaluate(stmt.initializer)
         self.environment.define(stmt.name.lexeme, value)
 
+    def visitWhileStmt(self, stmt: WhileStmt):
+        while self.isTruthy(self.evaluate(stmt.condition)):
+            self.execute(stmt.body)
+
     def visitBlock(self, stmt: BlockStmt):
         self.executeBlock(stmt.statements, Environment(self.environment))
 
@@ -710,7 +730,9 @@ class Parser:
     program        → declaration* EOF ;
     declaration    → varDecl | statement;
     varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
-    statement      → exprStmt | ifStmt | printStmt | block ;
+    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | block ;
+    forStmt        → "for" "(" (varDecl | exprStmt | ";" ) expression? ";" expression? ")" statement ; 
+    whileStmt      → "while" "(" expression ")" statement ;
     ifStmt         → "if" "(" expression ")" statement ( "else" statement )? ;
     block          → "{" declaration* "}"
     exprStmt       → expression ";" ;
@@ -748,13 +770,50 @@ class Parser:
             self.synchronize()
         
     def statement(self) -> Stmt:
+        if self.match(TokenType.FOR):
+            return self.forStatement()
         if self.match(TokenType.IF):
             return self.ifStatement()
         if self.match(TokenType.PRINT):
             return self.printStatement()
+        if self.match(TokenType.WHILE):
+            return self.whileStatement()
         if self.match(TokenType.LEFT_BRACE):
             return BlockStmt(self.block())
         return self.expressionStatement()
+    
+    def forStatement(self) -> Stmt:
+        self.consume(TokenType.LEFT_PAREN, "Expect ( after for")
+        initializer = None
+        if self.match(TokenType.SEMICOLON):
+            initializer = None
+        elif self.match(TokenType.VAR):
+            initializer = self.varDeclaration()
+        else:
+            initializer = self.expressionStatement()
+        
+        condition = None
+        if not self.check(TokenType.SEMICOLON):
+            condition = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after loop condition")
+
+        increment = None
+        if not self.check(TokenType.RIGHT_PAREN):
+            increment = self.expression()
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after for clauses")
+
+        body = self.statement()
+        
+        # desugaring - implement for using while.
+        if increment is not None:
+            body = BlockStmt([body, ExpressionStmt(increment)])
+        if condition is None:
+            condition = Literal(True)
+        body = WhileStmt(condition, body)
+        if initializer is not None:
+            body = BlockStmt([initializer, body])
+        
+        return body
     
     def ifStatement(self) -> Stmt:
         self.consume(TokenType.LEFT_PAREN, "Expect ( after if")
@@ -773,6 +832,13 @@ class Parser:
             initializer = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ; after variable declaration")
         return VarStmt(name, initializer)
+    
+    def whileStatement(self) -> Stmt:
+        self.consume(TokenType.LEFT_PAREN, "Expect ( after while")
+        condition: Expr = self.expression()
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after condition")
+        body: Stmt = self.statement()
+        return WhileStmt(condition, body)
 
     def printStatement(self) -> Stmt:
         value: Expr = self.expression()

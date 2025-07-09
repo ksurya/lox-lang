@@ -1,0 +1,12 @@
+// loops
+var i = 3;
+print "This is a while loop";
+while (i > 0) {
+    print "Hello";
+    i = i - 1;
+}
+
+print "This is a for loop";
+for (var j = 0; j < 3; j = j + 1) {
+    print "Hello";
+}
