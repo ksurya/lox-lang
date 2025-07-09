@@ -1,0 +1,5 @@
+print "This loop never exits although it should";
+for (var p = 0; p < 10; p = p + 1) {
+    continue;
+    print "hello";
+}

@@ -1,0 +1,15 @@
+// conditions
+var a = 1;
+var b = 2;
+
+if (a == 1)
+    print "I am printing a=1";
+else
+    print "I am printing a!=1";
+
+print "Hi" or 2;
+print nil or "yes";
+print 1 or 0;
+print 1 and 0;
+print 1 and 2;
+print 1 and (2==4);

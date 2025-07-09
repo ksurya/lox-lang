@@ -52,6 +52,8 @@ class TokenType(StrEnum):
     TRUE = auto()
     VAR = auto()
     WHILE = auto()
+    BREAK = auto()
+    CONTINUE = auto()
 
     EOF = auto()
 
@@ -78,6 +80,14 @@ class LoxRuntimeError(RuntimeError):
 
 
 class LoxParseError(RuntimeError):
+    pass
+
+
+class LoxBreakException(Exception):
+    pass
+
+
+class LoxContinueException(Exception):
     pass
 
 
@@ -131,6 +141,10 @@ class ExprVisitor(abc.ABC, Generic[R]):
         pass
 
     @abc.abstractmethod
+    def visitLogicalExpr(self, expr: "Logical") -> R:
+        pass
+
+    @abc.abstractmethod
     def visitUnaryExpr(self, expr: "Unary") -> R:
         pass
 
@@ -145,11 +159,15 @@ class ExprVisitor(abc.ABC, Generic[R]):
 
 class StmtVisitor(abc.ABC, Generic[R]):
     @abc.abstractmethod
-    def visitPrintStmt(self, stmt: "Print") -> R:
+    def visitIfStmt(self, stmt: "IfStmt") -> R:
         pass
 
     @abc.abstractmethod
-    def visitExpressionStmt(self, stmt: "Expression") -> R:
+    def visitPrintStmt(self, stmt: "PrintStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitExpressionStmt(self, stmt: "ExpressionStmt") -> R:
         pass
 
     @abc.abstractmethod
@@ -157,7 +175,19 @@ class StmtVisitor(abc.ABC, Generic[R]):
         pass
 
     @abc.abstractmethod
-    def visitBlock(self, stmt: "Block") -> R:
+    def visitWhileStmt(self, stmt: "WhileStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitBreakStmt(self, stmt: "BreakStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitContinueStmt(self, stmt: "BreakStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitBlock(self, stmt: "BlockStmt") -> R:
         pass
 
 
@@ -198,14 +228,24 @@ class Grouping(Expr):
 
 
 class Literal(Expr):
-    def __init__(self, value: Union[str, int, float, None]):
-        self.value: Union[str, int, float, None] = value
+    def __init__(self, value: Union[str, int, float, bool, None]):
+        self.value: Union[str, int, float, bool, None] = value
 
     def accept(self, visitor: ExprVisitor[R]) -> R:
         return visitor.visitLiteralExpr(self)
     
     def __str__(self):
         return str(self.value)
+
+
+class Logical(Expr):
+    def __init__(self, left: Expr, operator: Token, right: Expr):
+        self.left: Expr = left
+        self.operator: Token = operator
+        self.right: Expr = right
+    
+    def accept(self, visitor: ExprVisitor[R]) -> R:
+        return visitor.visitLogicalExpr(self)
 
 
 class Unary(Expr):
@@ -231,7 +271,7 @@ class Variable(Expr):
         return f"Var({self.name})"
 
 
-class Expression(Stmt):
+class ExpressionStmt(Stmt):
     def __init__(self, expression: Expr):
         self.expression: Expr = expression
 
@@ -240,9 +280,25 @@ class Expression(Stmt):
     
     def __str__(self):
         return f"Stmt[{self.expression}]"
-    
 
-class Print(Stmt):
+
+class IfStmt(Stmt):
+    def __init__(self, condition: Expr, thenBranch: Stmt, elseBranch: Union[Stmt, None]):
+        self.condition: Expr = condition
+        self.thenBranch: Stmt = thenBranch
+        self.elseBranch: Union[Stmt, None] = elseBranch
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitIfStmt(self)
+    
+    def __str__(self):
+        if self.elseBranch:
+            return f"(if ({self.condition}) ({self.thenBranch}) ({self.elseBranch}))"
+        else:
+            return f"(if ({self.condition}) ({self.thenBranch}) ())"
+
+
+class PrintStmt(Stmt):
     def __init__(self, expression: Expr):
         self.expression: Expr = expression
 
@@ -265,7 +321,41 @@ class VarStmt(Stmt):
         return f"VarStmt[{self.name} = {self.initializer}]"
 
 
-class Block(Stmt):
+class WhileStmt(Stmt):
+    def __init__(self, condition: Expr, body: Stmt):
+        self.condition: Expr = condition
+        self.body: Stmt = body
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitWhileStmt(self)
+    
+    def __str__(self):
+        return f"(if ({self.condition}) ({self.body})))"
+
+
+class BreakStmt(Stmt):
+    def __init__(self, name: Token):
+        self.name: Token = name
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitBreakStmt(self)
+    
+    def __str__(self):
+        return f"(break)"
+    
+
+class ContinueStmt(Stmt):
+    def __init__(self, name: Token):
+        self.name: Token = name
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitContinueStmt(self)
+    
+    def __str__(self):
+        return f"(continue)"
+        
+
+class BlockStmt(Stmt):
     def __init__(self, statements: list[Stmt]):
         self.statements = statements
     
@@ -277,7 +367,7 @@ class Block(Stmt):
 
 
 class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
-    def _parenthesize(self, name: str, *exprs: Expr):
+    def _parenthesize(self, name: str, *exprs: Union[Expr, Stmt]):
         string_container = ["(", name]
         for expr in exprs:
             string_container.append(" ")
@@ -301,7 +391,7 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
         string_container.append(")")
         return "".join(string_container)
     
-    def visitBlock(self, stmt: Block) -> str:
+    def visitBlock(self, stmt: BlockStmt) -> str:
         string_container = ["(block "]
         for idx, statement in enumerate(stmt.statements):
             string_container.append(" ")
@@ -311,10 +401,10 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
         string_container.append(")")
         return "".join(string_container)
     
-    def visitExpressionStmt(self, stmt: Expression) -> str:
+    def visitExpressionStmt(self, stmt: ExpressionStmt) -> str:
         return self._parenthesize("expression", stmt.expression)
     
-    def visitPrintStmt(self, stmt: Print) -> str:
+    def visitPrintStmt(self, stmt: PrintStmt) -> str:
         return self._parenthesize("print", stmt.expression)
     
     def visitVarStmt(self, stmt: VarStmt) -> str:
@@ -348,6 +438,15 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
             return f'"{expr.value}"'
         else:
             return str(expr.value)
+        
+    def visitIfStmt(self, stmt: IfStmt) -> str:
+        if stmt.elseBranch:
+            return self._parenthesize("If", stmt.condition, stmt.thenBranch, stmt.elseBranch)
+        else:
+            return self._parenthesize("If", stmt.condition, stmt.thenBranch)
+        
+    def visitLogicalExpr(self, expr: Logical):
+        return self._parenthesize(expr.operator.lexeme, expr.left, expr.right)
     
     def visitUnaryExpr(self, expr: Unary) -> str:
         return self._parenthesize(expr.operator.lexeme, expr.right)
@@ -373,6 +472,7 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
     def __init__(self):
         self.environment = Environment()
+        self.loop_depth: int = 0
     
     def interpret(self, statements: list[Stmt], onError: Callable):
         try:
@@ -420,6 +520,16 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
     def visitLiteralExpr(self, expr: Literal) -> object:
         return expr.value
+    
+    def visitLogicalExpr(self, expr: Logical) -> object:
+        left = self.evaluate(expr.left)
+        if expr.operator.type == TokenType.OR:
+            if self.isTruthy(left):
+                return left
+        else:
+            if not self.isTruthy(left):
+                return left
+        return self.evaluate(expr.right)
     
     def visitGroupingExpr(self, expr: Grouping) -> object:
         return self.evaluate(expr.expression)
@@ -475,12 +585,18 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
         self.environment.assign(expr.name, value)
         return value
         
-    def visitPrintStmt(self, stmt: Print):
+    def visitPrintStmt(self, stmt: PrintStmt):
         value = self.evaluate(stmt.expression)
         print(self.stringify(value))
 
-    def visitExpressionStmt(self, stmt: Expression):
+    def visitExpressionStmt(self, stmt: ExpressionStmt):
         self.evaluate(stmt.expression)
+
+    def visitIfStmt(self, stmt: IfStmt):
+        if self.isTruthy(self.evaluate(stmt.condition)):
+            self.execute(stmt.thenBranch)
+        elif stmt.elseBranch != None:
+            self.execute(stmt.elseBranch)
 
     def visitVarStmt(self, stmt: VarStmt):
         value = None
@@ -488,7 +604,26 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
             value = self.evaluate(stmt.initializer)
         self.environment.define(stmt.name.lexeme, value)
 
-    def visitBlock(self, stmt: Block):
+    def visitWhileStmt(self, stmt: WhileStmt):
+        self.loop_depth += 1
+        try:
+            while self.isTruthy(self.evaluate(stmt.condition)):
+                try:
+                    self.execute(stmt.body)
+                except LoxContinueException:
+                    continue
+                except LoxBreakException:
+                    break
+        finally:
+            self.loop_depth -= 1
+
+    def visitBreakStmt(self, stmt: BreakStmt):
+        raise LoxBreakException()
+    
+    def visitContinueStmt(self, stmt):
+        raise LoxContinueException()
+
+    def visitBlock(self, stmt: BlockStmt):
         self.executeBlock(stmt.statements, Environment(self.environment))
 
 
@@ -511,6 +646,8 @@ class Scanner:
         "true":     TokenType.TRUE,
         "var":      TokenType.VAR,
         "while":    TokenType.WHILE,
+        "break":    TokenType.BREAK,
+        "continue": TokenType.CONTINUE,
     }
 
     def __init__(self, source: str, onError: Callable):
@@ -651,12 +788,19 @@ class Parser:
     program        → declaration* EOF ;
     declaration    → varDecl | statement;
     varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
-    statement      → exprStmt | printStmt | block ;
-    block          → "{" declaration* "}"
+    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | breakStmt | continueStmt | block ;
+    breakStmt      → "break" ";" ;
+    continueStmt   → "continue" ";" ; 
+    forStmt        → "for" "(" (varDecl | exprStmt | ";" ) expression? ";" expression? ")" statement ; 
+    whileStmt      → "while" "(" expression ")" statement ;
+    ifStmt         → "if" "(" expression ")" statement ( "else" statement )? ;
+    block          → "{" declaration* "}" ;
     exprStmt       → expression ";" ;
     printStmt      → "print" expression ";" ;
     expression     → assignment ;
-    assignment     → IDENTIFIER "=" assignment | equality ;
+    assignment     → IDENTIFIER "=" assignment | logic_or ;
+    logic_or       → logic_and ( "or" logic_and )* ;
+    logic_and      → equality ( "and" equality )* ;
     equality       → comparison ( ( "!=" | "==" ) comparison )* ;
     comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
     term           → factor ( ( "-" | "+" ) factor )* ;
@@ -667,6 +811,7 @@ class Parser:
     def __init__(self, tokens: list[Token], onError: Callable):
         self.tokens: list[Token] = tokens
         self.current: int = 0
+        self.loop_depth: int = 0
         self.onError: Callable = onError
 
     def parse(self) -> list[Stmt]:
@@ -686,11 +831,80 @@ class Parser:
             self.synchronize()
         
     def statement(self) -> Stmt:
+        if self.match(TokenType.CONTINUE):
+            return self.continueStatement()
+        if self.match(TokenType.BREAK):
+            return self.breakStatement()
+        if self.match(TokenType.FOR):
+            return self.forStatement()
+        if self.match(TokenType.IF):
+            return self.ifStatement()
         if self.match(TokenType.PRINT):
             return self.printStatement()
+        if self.match(TokenType.WHILE):
+            return self.whileStatement()
         if self.match(TokenType.LEFT_BRACE):
-            return Block(self.block())
+            return BlockStmt(self.block())
         return self.expressionStatement()
+    
+    def breakStatement(self) -> Stmt:
+        keyword = self.previous()
+        if self.loop_depth == 0:
+            self.error(keyword, "break statement outside a loop is not allowed")
+        self.consume(TokenType.SEMICOLON, "Expect ; after break")
+        return BreakStmt(keyword)
+    
+    def continueStatement(self) -> Stmt:
+        keyword = self.previous()
+        if self.loop_depth == 0:
+            self.error(keyword, "continue statement outside a loop is not allowed")
+        self.consume(TokenType.SEMICOLON, "Expect ; after continue")
+        return ContinueStmt(keyword)
+    
+    def forStatement(self) -> Stmt:
+        self.consume(TokenType.LEFT_PAREN, "Expect ( after for")
+        initializer = None
+        if self.match(TokenType.SEMICOLON):
+            initializer = None
+        elif self.match(TokenType.VAR):
+            initializer = self.varDeclaration()
+        else:
+            initializer = self.expressionStatement()
+        
+        condition = None
+        if not self.check(TokenType.SEMICOLON):
+            condition = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after loop condition")
+
+        increment = None
+        if not self.check(TokenType.RIGHT_PAREN):
+            increment = self.expression()
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after for clauses")
+
+        self.loop_depth += 1
+        body = self.statement()
+        self.loop_depth -= 1
+
+        # desugaring - implement for using while.
+        if increment is not None:
+            body = BlockStmt([body, ExpressionStmt(increment)])
+        if condition is None:
+            condition = Literal(True)
+        body = WhileStmt(condition, body)
+        if initializer is not None:
+            body = BlockStmt([initializer, body])
+        
+        return body
+    
+    def ifStatement(self) -> Stmt:
+        self.consume(TokenType.LEFT_PAREN, "Expect ( after if")
+        condition = self.expression()
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after if")
+        thenBranch = self.statement()
+        elseBranch = None
+        if self.match(TokenType.ELSE):
+            elseBranch = self.statement()
+        return IfStmt(condition, thenBranch, elseBranch)
     
     def varDeclaration(self) -> Stmt:
         name = self.consume(TokenType.IDENTIFIER, "Expect variable name")
@@ -699,11 +913,20 @@ class Parser:
             initializer = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ; after variable declaration")
         return VarStmt(name, initializer)
+    
+    def whileStatement(self) -> Stmt:
+        self.consume(TokenType.LEFT_PAREN, "Expect ( after while")
+        condition: Expr = self.expression()
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after condition")
+        self.loop_depth += 1
+        body: Stmt = self.statement()
+        self.loop_depth -= 1
+        return WhileStmt(condition, body)
 
     def printStatement(self) -> Stmt:
         value: Expr = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ; after value")
-        return Print(value)
+        return PrintStmt(value)
     
     def block(self) -> list[Stmt]:
         statements: list[Stmt] = []
@@ -717,19 +940,35 @@ class Parser:
     def expressionStatement(self) -> Stmt:
         value: Expr = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ; after value")
-        return Expression(value)
+        return ExpressionStmt(value)
 
     def expression(self) -> Expr:
         return self.assignment()
     
-    def assignment(self):
-        expr: Variable = cast(Variable, self.equality())
+    def assignment(self) -> Expr:
+        expr: Expr = self.logicalOr()
         if self.match(TokenType.EQUAL):
             equals: Token = self.previous()
             value: Expr = self.assignment()
             if isinstance(expr, Variable):
                 return Assign(expr.name, value)
             self.error(equals, "Invalid assignment target")
+        return expr
+    
+    def logicalOr(self) -> Expr:
+        expr: Expr = self.logicalAnd()
+        while self.match(TokenType.OR):
+            operator = self.previous()
+            right = self.logicalAnd()
+            expr = Logical(expr, operator, right)
+        return expr
+    
+    def logicalAnd(self) -> Expr:
+        expr: Expr = self.equality()
+        while self.match(TokenType.AND):
+            operator = self.previous()
+            right = self.equality()
+            expr = Logical(expr, operator, right)
         return expr
 
     def equality(self) -> Expr:
@@ -850,12 +1089,12 @@ class Lox:
         self.hasRuntimeError = False
         self.interpreter = Interpreter()
     
-    def runFile(self, path: str):
+    def runFile(self, path: str, showAst: bool):
         with open(path) as fp:
             source = fp.read()
-        self.run(source)
+        self.run(source, showAst)
     
-    def runPrompt(self):
+    def runPrompt(self, showAst: bool):
         print("> Lox Language interpreter")
         print("> Enter \\q to quit")
         while True:
@@ -864,10 +1103,10 @@ class Lox:
                 break
             if line.strip() == "":
                 continue
-            self.run(line)
+            self.run(line, showAst)
             self.hasError = False
     
-    def run(self, source: str):
+    def run(self, source: str, showAst: bool = False):
         scanner = Scanner(source, self.error)
         tokens = scanner.scanTokens()
         parser = Parser(tokens, self.errorByToken)
@@ -879,7 +1118,8 @@ class Lox:
         self.interpreter.interpret(statements, self.runtimeError)
         if self.hasRuntimeError:
             sys.exit(70)
-        print(AstPrinter().printProgram(statements))
+        if showAst:
+            print(AstPrinter().printProgram(statements))
     
     def error(self, line: int, message: str):
         self.report(line, message, "")
@@ -904,15 +1144,13 @@ class Lox:
 
 def main(args):
     if args.script:
-        Lox().runFile(args.script)
-    elif args.ast:
-        AstPrinter().test()
+        Lox().runFile(args.script, args.ast)
     else:
-        Lox().runPrompt()
+        Lox().runPrompt(args.ast)
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('--script', default=None)
-    parser.add_argument('--ast', action="store_true")
+    parser.add_argument('--ast', action="store_true", default=False)
     main(parser.parse_args())
     
