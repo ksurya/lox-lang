@@ -53,6 +53,7 @@ class TokenType(StrEnum):
     VAR = auto()
     WHILE = auto()
     BREAK = auto()
+    CONTINUE = auto()
 
     EOF = auto()
 
@@ -83,6 +84,10 @@ class LoxParseError(RuntimeError):
 
 
 class LoxBreakException(Exception):
+    pass
+
+
+class LoxContinueException(Exception):
     pass
 
 
@@ -175,6 +180,10 @@ class StmtVisitor(abc.ABC, Generic[R]):
 
     @abc.abstractmethod
     def visitBreakStmt(self, stmt: "BreakStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitContinueStmt(self, stmt: "BreakStmt") -> R:
         pass
 
     @abc.abstractmethod
@@ -333,6 +342,17 @@ class BreakStmt(Stmt):
     
     def __str__(self):
         return f"(break)"
+    
+
+class ContinueStmt(Stmt):
+    def __init__(self, name: Token):
+        self.name: Token = name
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitContinueStmt(self)
+    
+    def __str__(self):
+        return f"(continue)"
         
 
 class BlockStmt(Stmt):
@@ -588,14 +608,20 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
         self.loop_depth += 1
         try:
             while self.isTruthy(self.evaluate(stmt.condition)):
-                self.execute(stmt.body)
-        except LoxBreakException:
-            pass
+                try:
+                    self.execute(stmt.body)
+                except LoxContinueException:
+                    continue
+                except LoxBreakException:
+                    break
         finally:
             self.loop_depth -= 1
 
     def visitBreakStmt(self, stmt: BreakStmt):
         raise LoxBreakException()
+    
+    def visitContinueStmt(self, stmt):
+        raise LoxContinueException()
 
     def visitBlock(self, stmt: BlockStmt):
         self.executeBlock(stmt.statements, Environment(self.environment))
@@ -621,6 +647,7 @@ class Scanner:
         "var":      TokenType.VAR,
         "while":    TokenType.WHILE,
         "break":    TokenType.BREAK,
+        "continue": TokenType.CONTINUE,
     }
 
     def __init__(self, source: str, onError: Callable):
@@ -761,8 +788,9 @@ class Parser:
     program        → declaration* EOF ;
     declaration    → varDecl | statement;
     varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
-    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | breakStmt | block ;
+    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | breakStmt | continueStmt | block ;
     breakStmt      → "break" ";" ;
+    continueStmt   → "continue" ";" ; 
     forStmt        → "for" "(" (varDecl | exprStmt | ";" ) expression? ";" expression? ")" statement ; 
     whileStmt      → "while" "(" expression ")" statement ;
     ifStmt         → "if" "(" expression ")" statement ( "else" statement )? ;
@@ -803,6 +831,8 @@ class Parser:
             self.synchronize()
         
     def statement(self) -> Stmt:
+        if self.match(TokenType.CONTINUE):
+            return self.continueStatement()
         if self.match(TokenType.BREAK):
             return self.breakStatement()
         if self.match(TokenType.FOR):
@@ -823,6 +853,13 @@ class Parser:
             self.error(keyword, "break statement outside a loop is not allowed")
         self.consume(TokenType.SEMICOLON, "Expect ; after break")
         return BreakStmt(keyword)
+    
+    def continueStatement(self) -> Stmt:
+        keyword = self.previous()
+        if self.loop_depth == 0:
+            self.error(keyword, "continue statement outside a loop is not allowed")
+        self.consume(TokenType.SEMICOLON, "Expect ; after continue")
+        return ContinueStmt(keyword)
     
     def forStatement(self) -> Stmt:
         self.consume(TokenType.LEFT_PAREN, "Expect ( after for")

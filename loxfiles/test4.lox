@@ -37,3 +37,16 @@ while (k < 4) {
         break;
     }
 }
+
+
+print "loop only runs three times";
+k = 0;
+while (k < 10) {
+    if (k >= 3) {
+        k = k + 1;
+        continue;
+    } else {
+        k = k + 1;
+        print "hello";
+    }
+}
