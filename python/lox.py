@@ -4,6 +4,7 @@ from enum import StrEnum, auto
 from typing import Any, Callable, Optional, Union, Generic, TypeVar, cast
 import abc
 import sys
+import readline # automatically stdin 
 
 
 R = TypeVar("R")
