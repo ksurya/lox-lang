@@ -183,7 +183,7 @@ class StmtVisitor(abc.ABC, Generic[R]):
         pass
 
     @abc.abstractmethod
-    def visitContinueStmt(self, stmt: "BreakStmt") -> R:
+    def visitContinueStmt(self, stmt: "ContinueStmt") -> R:
         pass
 
     @abc.abstractmethod
@@ -392,14 +392,13 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
         return "".join(string_container)
     
     def visitBlock(self, stmt: BlockStmt) -> str:
-        string_container = ["(block "]
+        string_container = ["(block"]
         for idx, statement in enumerate(stmt.statements):
-            string_container.append(" ")
             string_container.append(statement.accept(self))
             if idx < len(stmt.statements) - 1:
-                string_container.append("\n")
+                string_container.append("\n\t")
         string_container.append(")")
-        return "".join(string_container)
+        return " ".join(string_container)
     
     def visitExpressionStmt(self, stmt: ExpressionStmt) -> str:
         return self._parenthesize("expression", stmt.expression)
@@ -408,13 +407,12 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
         return self._parenthesize("print", stmt.expression)
     
     def visitVarStmt(self, stmt: VarStmt) -> str:
-        string_container = ["(var "]
-        string_container.append(stmt.name.lexeme)
-        if stmt.initializer is not None:
-            string_container.append("=")
-            string_container.append(stmt.initializer.accept(self))
-        string_container.append(")")
-        return "".join(string_container)
+        var_container = ["(var", stmt.name.lexeme, ")"]
+        if stmt.initializer is None:
+            stmt_container = var_container
+        else:
+            stmt_container = ["(="] + var_container + [stmt.initializer.accept(self), ")"]
+        return " ".join(stmt_container)
     
     def visitAssignExpr(self, expr: Assign) -> str:
         string_container = []
@@ -453,7 +451,20 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
 
     def visitVariableExpr(self, expr: Variable) -> str:
         return expr.name.lexeme
- 
+    
+    def visitWhileStmt(self, stmt: WhileStmt) -> str:
+        string_container = ["(while"]
+        string_container.append(stmt.condition.accept(self))
+        string_container.append(stmt.body.accept(self))
+        string_container.append(")")
+        return " ".join(string_container)
+
+    def visitBreakStmt(self, stmt: BreakStmt) -> str:
+        return "(break)"
+
+    def visitContinueStmt(self, stmt: ContinueStmt) -> str:
+        return "(continue)"
+
     def test(self):
         expr = Binary(
             Unary(
@@ -620,7 +631,7 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
     def visitBreakStmt(self, stmt: BreakStmt):
         raise LoxBreakException()
     
-    def visitContinueStmt(self, stmt):
+    def visitContinueStmt(self, stmt: ContinueStmt):
         raise LoxContinueException()
 
     def visitBlock(self, stmt: BlockStmt):
