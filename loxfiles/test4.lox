@@ -9,4 +9,31 @@ while (i > 0) {
 print "This is a for loop";
 for (var j = 0; j < 3; j = j + 1) {
     print "Hello";
+    break;
+}
+
+// breaks
+print "This loop wont run";
+var k = 0;
+while (k < 4) {
+    break;
+}
+
+print "This loop runs once before breaking";
+while (k < 4) {
+    if (k == 0) {
+        print "Hello";
+        break;
+    }
+    k = k + 1;
+}
+
+// nested loop
+print "This loop runs four times";
+while (k < 4) {
+    while (k < 4) {
+        print "Hello";
+        k = k + 1;
+        break;
+    }
 }

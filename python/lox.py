@@ -52,6 +52,7 @@ class TokenType(StrEnum):
     TRUE = auto()
     VAR = auto()
     WHILE = auto()
+    BREAK = auto()
 
     EOF = auto()
 
@@ -78,6 +79,10 @@ class LoxRuntimeError(RuntimeError):
 
 
 class LoxParseError(RuntimeError):
+    pass
+
+
+class LoxBreakException(Exception):
     pass
 
 
@@ -166,6 +171,10 @@ class StmtVisitor(abc.ABC, Generic[R]):
 
     @abc.abstractmethod
     def visitWhileStmt(self, stmt: "WhileStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitBreakStmt(self, stmt: "BreakStmt") -> R:
         pass
 
     @abc.abstractmethod
@@ -315,6 +324,17 @@ class WhileStmt(Stmt):
         return f"(if ({self.condition}) ({self.body})))"
 
 
+class BreakStmt(Stmt):
+    def __init__(self, name: Token):
+        self.name: Token = name
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitBreakStmt(self)
+    
+    def __str__(self):
+        return f"(break)"
+        
+
 class BlockStmt(Stmt):
     def __init__(self, statements: list[Stmt]):
         self.statements = statements
@@ -432,6 +452,7 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
     def __init__(self):
         self.environment = Environment()
+        self.loop_depth: int = 0
     
     def interpret(self, statements: list[Stmt], onError: Callable):
         try:
@@ -564,8 +585,17 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
         self.environment.define(stmt.name.lexeme, value)
 
     def visitWhileStmt(self, stmt: WhileStmt):
-        while self.isTruthy(self.evaluate(stmt.condition)):
-            self.execute(stmt.body)
+        self.loop_depth += 1
+        try:
+            while self.isTruthy(self.evaluate(stmt.condition)):
+                self.execute(stmt.body)
+        except LoxBreakException:
+            pass
+        finally:
+            self.loop_depth -= 1
+
+    def visitBreakStmt(self, stmt: BreakStmt):
+        raise LoxBreakException()
 
     def visitBlock(self, stmt: BlockStmt):
         self.executeBlock(stmt.statements, Environment(self.environment))
@@ -590,6 +620,7 @@ class Scanner:
         "true":     TokenType.TRUE,
         "var":      TokenType.VAR,
         "while":    TokenType.WHILE,
+        "break":    TokenType.BREAK,
     }
 
     def __init__(self, source: str, onError: Callable):
@@ -730,11 +761,12 @@ class Parser:
     program        → declaration* EOF ;
     declaration    → varDecl | statement;
     varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
-    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | block ;
+    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | breakStmt | block ;
+    breakStmt      → "break" ";" ;
     forStmt        → "for" "(" (varDecl | exprStmt | ";" ) expression? ";" expression? ")" statement ; 
     whileStmt      → "while" "(" expression ")" statement ;
     ifStmt         → "if" "(" expression ")" statement ( "else" statement )? ;
-    block          → "{" declaration* "}"
+    block          → "{" declaration* "}" ;
     exprStmt       → expression ";" ;
     printStmt      → "print" expression ";" ;
     expression     → assignment ;
@@ -751,6 +783,7 @@ class Parser:
     def __init__(self, tokens: list[Token], onError: Callable):
         self.tokens: list[Token] = tokens
         self.current: int = 0
+        self.loop_depth: int = 0
         self.onError: Callable = onError
 
     def parse(self) -> list[Stmt]:
@@ -770,6 +803,8 @@ class Parser:
             self.synchronize()
         
     def statement(self) -> Stmt:
+        if self.match(TokenType.BREAK):
+            return self.breakStatement()
         if self.match(TokenType.FOR):
             return self.forStatement()
         if self.match(TokenType.IF):
@@ -781,6 +816,13 @@ class Parser:
         if self.match(TokenType.LEFT_BRACE):
             return BlockStmt(self.block())
         return self.expressionStatement()
+    
+    def breakStatement(self) -> Stmt:
+        keyword = self.previous()
+        if self.loop_depth == 0:
+            self.error(keyword, "break statement outside a loop is not allowed")
+        self.consume(TokenType.SEMICOLON, "Expect ; after break")
+        return BreakStmt(keyword)
     
     def forStatement(self) -> Stmt:
         self.consume(TokenType.LEFT_PAREN, "Expect ( after for")
@@ -802,8 +844,10 @@ class Parser:
             increment = self.expression()
         self.consume(TokenType.RIGHT_PAREN, "Expect ) after for clauses")
 
+        self.loop_depth += 1
         body = self.statement()
-        
+        self.loop_depth -= 1
+
         # desugaring - implement for using while.
         if increment is not None:
             body = BlockStmt([body, ExpressionStmt(increment)])
@@ -837,7 +881,9 @@ class Parser:
         self.consume(TokenType.LEFT_PAREN, "Expect ( after while")
         condition: Expr = self.expression()
         self.consume(TokenType.RIGHT_PAREN, "Expect ) after condition")
+        self.loop_depth += 1
         body: Stmt = self.statement()
+        self.loop_depth -= 1
         return WhileStmt(condition, body)
 
     def printStatement(self) -> Stmt:

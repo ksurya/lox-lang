@@ -1,0 +1,5 @@
+var k = 0;
+print "This will now raise error";
+if (k == 0) {
+    break;
+}
