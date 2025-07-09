@@ -1,6 +1,37 @@
 #!/bin/bash
 
-# usage: python python/lox.py --script <script_file>
-# script is optional
-python3 python/lox.py --script "$1"
+# Usage scenarios:
+# ./lox                        - Interactive mode
+# ./lox file.lox               - Run file
+# ./lox --ast                  - Interactive mode with AST
+# ./lox file.lox --ast         - Run file with AST
+
+# Check if --ast flag is present
+ast_flag=""
+script_file=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --ast)
+            ast_flag="--ast"
+            shift
+            ;;
+        *.lox|*.tlox)
+            script_file="$1"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Execute based on arguments
+if [[ -n "$script_file" ]]; then
+    python3 python/lox.py --script "$script_file" $ast_flag
+else
+    python3 python/lox.py $ast_flag
+fi
 
