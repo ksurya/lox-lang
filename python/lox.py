@@ -4,6 +4,7 @@ from enum import StrEnum, auto
 from typing import Any, Callable, Optional, Union, Generic, TypeVar, cast
 import abc
 import sys
+import time
 import readline # automatically stdin 
 
 
@@ -92,6 +93,12 @@ class LoxContinueException(Exception):
     pass
 
 
+class LoxReturn(RuntimeError):
+    def __init__(self, value: object):
+        super().__init__()
+        self.value = value
+
+
 class Environment:
     def __init__(self, enclosing: Optional["Environment"] = None):
         self.values: dict[str, object] = {}
@@ -116,6 +123,17 @@ class Environment:
         raise LoxRuntimeError(name, f"Undefined variable '{name.lexeme}'")
 
 
+class LoxCallable(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def arity(self):
+        pass
+
+    @abc.abstractmethod
+    def call(self, interpreter: "Interpreter", arguments: list[object]) -> object:
+        pass
+
+
 class Expr(abc.ABC):
     @abc.abstractmethod
     def accept(self, visitor: "ExprVisitor[R]") -> R: 
@@ -135,6 +153,10 @@ class ExprVisitor(abc.ABC, Generic[R]):
 
     @abc.abstractmethod
     def visitGroupingExpr(self, expr: "Grouping") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitCallExpr(self, expr: "Call") -> R:
         pass
 
     @abc.abstractmethod
@@ -172,6 +194,14 @@ class StmtVisitor(abc.ABC, Generic[R]):
         pass
 
     @abc.abstractmethod
+    def visitFunctionStmt(self, stmt: "FunctionStmt") -> R:
+        pass
+
+    @abc.abstractmethod
+    def visitReturnStmt(self, stmt: "ReturnStmt") -> R:
+        pass
+
+    @abc.abstractmethod
     def visitVarStmt(self, stmt: "VarStmt") -> R:
         pass
 
@@ -190,6 +220,38 @@ class StmtVisitor(abc.ABC, Generic[R]):
     @abc.abstractmethod
     def visitBlock(self, stmt: "BlockStmt") -> R:
         pass
+
+
+class NativeClockFun(LoxCallable):
+    def __init__(self):
+        self.arity = 0
+    
+    def call(self, interpreter: "Interpreter", arguments: list[object]) -> object:
+        return time.time()
+    
+    def __str__(self):
+        return "<native clock fun>"
+
+
+class LoxUserDefinedFun(LoxCallable):
+    def __init__(self, declaration: "FunctionStmt", closure: Environment):
+        self.declaration: "FunctionStmt" = declaration
+        self.closure: Environment = closure
+    
+    def arity(self):
+        return len(self.declaration.params)
+    
+    def call(self, interpreter: "Interpreter", arguments: list[object]) -> object:
+        env = Environment(self.closure)
+        for param, arg in zip(self.declaration.params, arguments):
+            env.define(param.lexeme, arg)
+        try:
+            interpreter.executeBlock(self.declaration.body, env)
+        except LoxReturn as r:
+            return r.value
+
+    def __str__(self):
+        return f"<{self.declaration.name.lexeme}>"
 
 
 class Assign(Expr):
@@ -215,6 +277,19 @@ class Binary(Expr):
     
     def __str__(self):
         return f"Binary({self.left}, {self.operator}, {self.right})"
+    
+
+class Call(Expr):
+    def __init__(self, callee: Expr, paren: Token, arguments: list[Expr]):
+        self.callee: Expr = callee
+        self.paren: Token = paren  # token of closing paren to report location in error
+        self.arguments: list[Expr] = arguments
+    
+    def accept(self, visitor: ExprVisitor[R]) -> R:
+        return visitor.visitCallExpr(self)
+
+    def __str__(self):
+        return f"(call {self.callee} {self.arguments})"
     
 
 class Grouping(Expr):
@@ -283,6 +358,19 @@ class ExpressionStmt(Stmt):
         return f"Stmt[{self.expression}]"
 
 
+class FunctionStmt(Stmt):
+    def __init__(self, name: Token, params: list[Token], body: list[Stmt]):
+        self.name: Token = name
+        self.params: list[Token] = params
+        self.body: list[Stmt] = body
+
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitFunctionStmt(self)
+    
+    def __str__(self):
+        return f"Fun[{self.name} {self.params}]"
+
+
 class IfStmt(Stmt):
     def __init__(self, condition: Expr, thenBranch: Stmt, elseBranch: Union[Stmt, None]):
         self.condition: Expr = condition
@@ -308,6 +396,18 @@ class PrintStmt(Stmt):
     
     def __str__(self):
         return f"Print[{self.expression}]"
+
+
+class ReturnStmt(Stmt):
+    def __init__(self, keyword: Token, value: Expr):
+        self.keyword: Token = keyword
+        self.value: Expr = value
+    
+    def accept(self, visitor: StmtVisitor[R]) -> R:
+        return visitor.visitReturnStmt(self)
+
+    def __str__(self):
+        return f"Return[{self.value or "nil"}]"
 
 
 class VarStmt(Stmt):
@@ -483,9 +583,10 @@ class AstPrinter(ExprVisitor[str], StmtVisitor[str]):
 class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
     def __init__(self):
-        self.environment = Environment()
+        self.globals = Environment()
+        self.environment = self.globals
         self.loop_depth: int = 0
-    
+
     def interpret(self, statements: list[Stmt], onError: Callable):
         try:
             for statement in statements:
@@ -592,6 +693,18 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
             self.checkNumberOperands(expr.operator, left, right)
             return float(cast(float, left)) * float(cast(float, right))
 
+    def visitCallExpr(self, expr: Call) -> object:
+        callee = self.evaluate(expr.callee)
+        arguments: list[object] = []
+        for arg in expr.arguments:
+            arguments.append(self.evaluate(arg))
+        if not isinstance(callee, LoxCallable):
+            raise LoxRuntimeError(expr.paren, "Can only call functions and classes")
+        function: LoxCallable = cast(LoxCallable, callee)
+        if len(arguments) != function.arity():
+            raise LoxRuntimeError(expr.paren, f"Expected {function.arity()} arguments but got {len(arguments)}")
+        return function.call(self, arguments)
+
     def visitAssignExpr(self, expr: Assign) -> object:
         value = self.evaluate(expr.value)
         self.environment.assign(expr.name, value)
@@ -603,6 +716,16 @@ class Interpreter(ExprVisitor[object], StmtVisitor[None]):
 
     def visitExpressionStmt(self, stmt: ExpressionStmt):
         self.evaluate(stmt.expression)
+
+    def visitFunctionStmt(self, stmt: FunctionStmt):
+        function = LoxUserDefinedFun(stmt, self.environment)
+        self.environment.define(stmt.name.lexeme, function)
+
+    def visitReturnStmt(self, stmt: ReturnStmt):
+        value = None
+        if stmt.value != None:
+            value = self.evaluate(stmt.value)
+        raise LoxReturn(value)
 
     def visitIfStmt(self, stmt: IfStmt):
         if self.isTruthy(self.evaluate(stmt.condition)):
@@ -798,9 +921,13 @@ class Scanner:
 class Parser:
     """Grammar
     program        → declaration* EOF ;
-    declaration    → varDecl | statement;
+    declaration    → funDecl | varDecl | statement ;
+    funDecl        → "fun" function ;
+    function       → IDENTIFIER "(" parameters? ")" block ;
+    parameters     → IDENTIFIER ( "," IDENTIFIER )* ;
     varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
-    statement      → exprStmt | forStmt | ifStmt | printStmt | whileStmt | breakStmt | continueStmt | block ;
+    statement      → exprStmt | forStmt | ifStmt | printStmt | returnStmt | whileStmt | breakStmt | continueStmt | block ;
+    returnStmt     → "return" expression? ";" ;
     breakStmt      → "break" ";" ;
     continueStmt   → "continue" ";" ; 
     forStmt        → "for" "(" (varDecl | exprStmt | ";" ) expression? ";" expression? ")" statement ; 
@@ -817,7 +944,9 @@ class Parser:
     comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
     term           → factor ( ( "-" | "+" ) factor )* ;
     factor         → unary ( ( "/" | "*" ) unary )* ;
-    unary          → ( "!" | "-" ) unary | primary ;
+    unary          → ( "!" | "-" ) unary | call ;
+    call           → primary ( "(" arguments? ")" )* ;
+    arguments      → expression ( "," expression )* ; 
     primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" | IDENTIFIER ;
     """
     def __init__(self, tokens: list[Token], onError: Callable):
@@ -836,6 +965,8 @@ class Parser:
     
     def declaration(self) -> Optional[Stmt]:
         try:
+            if self.match(TokenType.FUN):
+                return self.function("function")
             if self.match(TokenType.VAR):
                 return self.varDeclaration()
             return self.statement()
@@ -853,6 +984,8 @@ class Parser:
             return self.ifStatement()
         if self.match(TokenType.PRINT):
             return self.printStatement()
+        if self.match(TokenType.RETURN):
+            return self.returnStatement()
         if self.match(TokenType.WHILE):
             return self.whileStatement()
         if self.match(TokenType.LEFT_BRACE):
@@ -940,6 +1073,14 @@ class Parser:
         self.consume(TokenType.SEMICOLON, "Expect ; after value")
         return PrintStmt(value)
     
+    def returnStatement(self) -> Stmt:
+        keyword = self.previous()
+        value = None
+        if not self.check(TokenType.SEMICOLON):
+            value = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ; after return value")
+        return ReturnStmt(keyword, value)
+    
     def block(self) -> list[Stmt]:
         statements: list[Stmt] = []
         while not self.check(TokenType.RIGHT_BRACE) and not self.isAtEnd():
@@ -953,6 +1094,22 @@ class Parser:
         value: Expr = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ; after value")
         return ExpressionStmt(value)
+    
+    def function(self, kind: str) -> Stmt:
+        name = self.consume(TokenType.IDENTIFIER, f"Expect {kind} name")
+        self.consume(TokenType.LEFT_PAREN, f"Expect ( after {kind} name")
+        parameters: list[Token] = []
+        if not self.check(TokenType.RIGHT_PAREN):
+            while True:
+                if len(parameters) >= 255:
+                    self.error(self.peek(), "Can not have more than 255 parameters")
+                parameters.append(self.consume(TokenType.IDENTIFIER, "Expect parameter name"))
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RIGHT_PAREN, "Expect ) after parameters")
+        self.consume(TokenType.LEFT_BRACE, f"Expect {{ before {kind} body")
+        body = self.block()
+        return FunctionStmt(name, parameters, body)
 
     def expression(self) -> Expr:
         return self.assignment()
@@ -1020,7 +1177,28 @@ class Parser:
             operator = self.previous()
             right = self.unary()
             return Unary(operator, right)
-        return self.primary()
+        return self.call()
+    
+    def call(self) -> Expr:
+        expr = self.primary()
+        while True:
+            if self.match(TokenType.LEFT_PAREN):
+                expr = self._finishCall(expr)
+            else:
+                break
+        return expr
+    
+    def _finishCall(self, callee) -> Expr:
+        arguments: list[Expr] = []
+        if not self.check(TokenType.RIGHT_PAREN):
+            while True:
+                arguments.append(self.expression())
+                if len(arguments) >= 255:
+                    self.error(self.peek(), "Can not have more than 255 arguments")
+                if not self.match(TokenType.COMMA):
+                    break
+        paren = self.consume(TokenType.RIGHT_PAREN, "Expect ) after arguments")
+        return Call(callee, paren, arguments)
     
     def primary(self) -> Expr:
         if self.match(TokenType.FALSE):
